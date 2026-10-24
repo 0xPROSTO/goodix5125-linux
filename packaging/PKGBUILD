@@ -5,7 +5,7 @@
 pkgname=libfprint-goodix5125
 _pkgname=libfprint
 pkgver=1.94.100
-pkgrel=8
+pkgrel=9
 pkgdesc="Library for fingerprint readers, with the goodix5125 driver (Goodix 27c6:5125)"
 arch=(x86_64)
 url="https://fprint.freedesktop.org/"
