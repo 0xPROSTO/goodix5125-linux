@@ -165,6 +165,14 @@ static int recv_msg(gx_dev *dev, uint8_t want, const uint8_t **payload,
 int gx_command(gx_dev *dev, uint8_t cmd, const uint8_t *payload, size_t len,
                uint8_t *reply, size_t reply_cap, size_t *reply_len)
 {
+    return gx_command_wait(dev, cmd, payload, len, reply, reply_cap, reply_len,
+                           dev->timeout_ms);
+}
+
+int gx_command_wait(gx_dev *dev, uint8_t cmd, const uint8_t *payload, size_t len,
+                    uint8_t *reply, size_t reply_cap, size_t *reply_len,
+                    unsigned reply_timeout_ms)
+{
     uint8_t msg[GX_RX_MAX];
     const uint8_t *body;
     size_t body_len;
@@ -201,7 +209,7 @@ int gx_command(gx_dev *dev, uint8_t cmd, const uint8_t *payload, size_t len,
     if (reply == NULL)
         return GX_OK;
 
-    rc = recv_msg(dev, cmd, &body, &body_len, dev->timeout_ms);
+    rc = recv_msg(dev, cmd, &body, &body_len, reply_timeout_ms);
     if (rc < 0)
         return rc;
     if (body_len > reply_cap)

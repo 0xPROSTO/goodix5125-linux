@@ -390,14 +390,31 @@ capture (Job *job, Session *s, gx_template *tpl, int *quality)
   return GX_OK;
 }
 
-/* The next touch must be a new one, not the same finger still resting. */
+/* The next touch must be a new one, not the same finger still resting.
+ * GX_ERR_TIMEOUT: it still rests. */
 static int
 wait_lift (Job *job, Session *s, unsigned timeout_ms)
 {
   int rc = gx_sensor_wait_lift (&s->dev, &s->info, timeout_ms);
 
-  post (job, 0, NULL, FP_FINGER_STATUS_NONE);
-  return rc == GX_ERR_TIMEOUT ? GX_OK : rc;
+  if (rc == GX_OK)
+    post (job, 0, NULL, FP_FINGER_STATUS_NONE);
+  return rc;
+}
+
+/* Enrolment captures again right away, so a finger held down would be stored
+ * twice: wait for as long as it rests, and ask once for it to be lifted. */
+static int
+enroll_lift (Job *job, Session *s)
+{
+  int rc = wait_lift (job, s, LIFT_TIMEOUT_MS);
+
+  if (rc == GX_ERR_TIMEOUT)
+    post (job, job->templates->len,
+          fpi_device_retry_new (FP_DEVICE_RETRY_REMOVE_FINGER), -1);
+  while (rc == GX_ERR_TIMEOUT)
+    rc = wait_lift (job, s, LIFT_TIMEOUT_MS);
+  return rc;
 }
 
 /* GOODIX5125_DUMP=dir writes every capture as PGM, for debugging only:
@@ -456,7 +473,7 @@ run_enroll (Job *job, Session *s)
 
       rc = capture (job, s, &tpl, &quality);
       if (rc == GX_OK)
-        rc = wait_lift (job, s, LIFT_TIMEOUT_MS);
+        rc = enroll_lift (job, s);
       if (rc < 0)
         return rc;
       dump ("enroll", s, &tpl);
@@ -485,8 +502,11 @@ run_enroll (Job *job, Session *s)
 static int
 wait_after_result (Job *job, Session *s)
 {
+  int rc;
+
   g_atomic_int_set (&job->ignore_cancel, 1);
-  return wait_lift (job, s, AFTER_MATCH_LIFT_MS);
+  rc = wait_lift (job, s, AFTER_MATCH_LIFT_MS);
+  return rc == GX_ERR_TIMEOUT ? GX_OK : rc;
 }
 
 static int

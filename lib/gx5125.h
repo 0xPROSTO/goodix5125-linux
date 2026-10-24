@@ -131,6 +131,11 @@ void gx_dev_init(gx_dev *dev, const gx_transport *t);
  * for the reply message with the same command code. */
 int gx_command(gx_dev *dev, uint8_t cmd, const uint8_t *payload, size_t len,
                uint8_t *reply, size_t reply_cap, size_t *reply_len);
+/* Same, but waits reply_timeout_ms (0 = forever) for the reply. The write
+ * and the ACK keep dev->timeout_ms: a write must never wait forever. */
+int gx_command_wait(gx_dev *dev, uint8_t cmd, const uint8_t *payload, size_t len,
+                    uint8_t *reply, size_t reply_cap, size_t *reply_len,
+                    unsigned reply_timeout_ms);
 int gx_nop(gx_dev *dev);
 /* Sends raw TLS records in a 0xb0 pack. */
 int gx_send_tls(gx_dev *dev, const uint8_t *records, size_t len);
@@ -187,6 +192,9 @@ int gx_sensor_background(gx_dev *dev, gx_info *info, uint16_t *pixels);
  * or timeout_ms elapses; 0 = forever). */
 int gx_sensor_wait_finger(gx_dev *dev, gx_info *info, unsigned timeout_ms);
 int gx_sensor_capture(gx_dev *dev, uint16_t *pixels);
+/* Blocks until the finger is lifted, then re-arms detection for the next
+ * touch. GX_ERR_TIMEOUT: still down after timeout_ms, re-armed all the same
+ * (detection then fires on the resting finger). */
 int gx_sensor_wait_lift(gx_dev *dev, gx_info *info, unsigned timeout_ms);
 
 bool gx_otp_valid(const uint8_t *otp, size_t len);

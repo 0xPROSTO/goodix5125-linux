@@ -264,13 +264,15 @@ static const uint8_t FDT_BOOT[12] = { 0xae, 0xae, 0xbf, 0xbf, 0xa4, 0xa4,
                                       0xb8, 0xb8, 0xa8, 0xa8, 0xb7, 0xb7 };
 static const uint8_t FDT_LEVELS[6] = { 0xaf, 0xbf, 0xa4, 0xb8, 0xa8, 0xb7 };
 
-/* Records the zone readings of an FDT reply as levels (raw / 2). */
+/* Records the zone readings of an FDT reply as levels (raw / 2). The reply
+ * comes within reply_timeout_ms (0 = forever). */
 static int fdt_cmd(gx_dev *dev, gx_info *info, uint8_t cmd, const uint8_t mode[14],
-                   bool learn)
+                   bool learn, unsigned reply_timeout_ms)
 {
     uint8_t reply[64];
     size_t n = 0;
-    int rc = gx_command(dev, cmd, mode, 14, reply, sizeof(reply), &n);
+    int rc = gx_command_wait(dev, cmd, mode, 14, reply, sizeof(reply), &n,
+                             reply_timeout_ms);
 
     if (rc < 0)
         return rc;
@@ -331,14 +333,14 @@ int gx_sensor_background(gx_dev *dev, gx_info *info, uint16_t *pixels)
     mode[0] = FDT_OP_MODE;
     mode[1] = 0x01;
     memcpy(mode + 2, FDT_BOOT, 12);
-    if ((rc = fdt_cmd(dev, info, GX_CMD_FDT_MODE, mode, true)) < 0)
+    if ((rc = fdt_cmd(dev, info, GX_CMD_FDT_MODE, mode, true, dev->timeout_ms)) < 0)
         return rc;
 
     if ((rc = gx_command(dev, GX_CMD_NAV, nav, 2, reply, sizeof(reply), &n)) < 0)
         return rc;
 
     fdt_frame(info, mode, FDT_OP_MODE, 0);
-    if ((rc = fdt_cmd(dev, info, GX_CMD_FDT_MODE, mode, false)) < 0)
+    if ((rc = fdt_cmd(dev, info, GX_CMD_FDT_MODE, mode, false, dev->timeout_ms)) < 0)
         return rc;
 
     if ((rc = read_reg(dev, 0x0082, 2, NULL)) < 0)
@@ -350,22 +352,18 @@ int gx_sensor_background(gx_dev *dev, gx_info *info, uint16_t *pixels)
 int gx_sensor_wait_finger(gx_dev *dev, gx_info *info, unsigned timeout_ms)
 {
     uint8_t mode[14];
-    unsigned saved = dev->timeout_ms;
     int rc;
 
     /* A detection armed by the previous wait_lift may have fired already. */
     gx_drain(dev);
 
     fdt_frame(info, mode, FDT_OP_MODE, 0);
-    if ((rc = fdt_cmd(dev, info, GX_CMD_FDT_MODE, mode, false)) < 0)
+    if ((rc = fdt_cmd(dev, info, GX_CMD_FDT_MODE, mode, false, dev->timeout_ms)) < 0)
         return rc;
 
     /* fdt_down only answers once a finger touches the sensor. */
     fdt_frame(info, mode, FDT_OP_DOWN, info->fdt_down_delta);
-    dev->timeout_ms = timeout_ms;
-    rc = fdt_cmd(dev, info, GX_CMD_FDT_DOWN, mode, false);
-    dev->timeout_ms = saved;
-    return rc;
+    return fdt_cmd(dev, info, GX_CMD_FDT_DOWN, mode, false, timeout_ms);
 }
 
 int gx_sensor_capture(gx_dev *dev, uint16_t *pixels)
@@ -377,20 +375,20 @@ int gx_sensor_wait_lift(gx_dev *dev, gx_info *info, unsigned timeout_ms)
 {
     static const uint8_t nav[2] = { 0x01, 0x00 };
     uint8_t mode[14], reply[64];
-    unsigned saved = dev->timeout_ms;
     size_t n;
-    int rc;
+    int up, rc;
 
     fdt_frame(info, mode, FDT_OP_UP, 0);
-    dev->timeout_ms = timeout_ms;
-    rc = fdt_cmd(dev, info, GX_CMD_FDT_UP, mode, false);
-    dev->timeout_ms = saved;
-    if (rc < 0)
-        return rc;
+    up = fdt_cmd(dev, info, GX_CMD_FDT_UP, mode, false, timeout_ms);
+    if (up < 0 && up != GX_ERR_TIMEOUT)
+        return up;
 
-    /* The MCU stops answering after a capture unless re-armed like this. */
+    /* The MCU stops answering after a capture unless re-armed like this,
+     * finger lifted or not. A late FDT_UP reply is skipped as a stray. */
     if ((rc = gx_command(dev, GX_CMD_NAV, nav, 2, reply, sizeof(reply), &n)) < 0)
         return rc;
     fdt_frame(info, mode, FDT_OP_DOWN, info->fdt_down_delta);
-    return gx_command(dev, GX_CMD_FDT_DOWN, mode, 14, NULL, 0, NULL);
+    if ((rc = gx_command(dev, GX_CMD_FDT_DOWN, mode, 14, NULL, 0, NULL)) < 0)
+        return rc;
+    return up;
 }
