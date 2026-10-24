@@ -3,7 +3,10 @@
 prints each result with the driver's score from the journal (needs
 tools/fprintd-debug.sh on).
 
-  verifyloop.py [rounds] [finger label]
+  verifyloop.py [rounds] [finger label] [finger]
+
+finger is the fprintd name (default right-index-finger). It must be given:
+without -f, fprintd-verify checks the first enrolled finger only.
 """
 
 import re
@@ -26,11 +29,12 @@ def journal_since(ts):
 def main():
     rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 10
     label = sys.argv[2] if len(sys.argv) > 2 else "правый УКАЗАТЕЛЬНЫЙ"
+    finger = sys.argv[3] if len(sys.argv) > 3 else "right-index-finger"
     ok = 0
     for i in range(1, rounds + 1):
         ts = time.time() - 1
         notify(f"Проверка {i}/{rounds}", f"Приложи {label} палец, как при разблокировке")
-        p = subprocess.run(["fprintd-verify"], capture_output=True, text=True, timeout=120)
+        p = subprocess.run(["fprintd-verify", "-f", finger], capture_output=True, text=True, timeout=120)
         result = re.findall(r"result: (\S+)", p.stdout)
         time.sleep(1)
         lines = journal_since(ts)

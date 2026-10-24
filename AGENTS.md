@@ -63,7 +63,7 @@ a password, so these tools need no root:
 |---|---|
 | `tools/cancelrace.py [delays…]` | VerifyStart, then VerifyStop and the next request back to back, the way GNOME Settings does. Every line must say `ok`. No finger needed, changes nothing |
 | `tools/latency.py N` | timing: sensor ready / touch → result / result → action closed. Prompts the owner by desktop notification |
-| `tools/verifyloop.py N [label]` | N guided `fprintd-verify` runs. With debug on it also prints the driver's scores |
+| `tools/verifyloop.py N [label] [finger]` | N guided `fprintd-verify -f finger` runs (default right-index-finger; without `-f` fprintd-verify checks only the first enrolled finger). With debug on it also prints the driver's scores |
 | `tools/fprintd-debug.sh on\|collect\|off` | (owner runs, sudo) fprintd drop-in: driver debug log to the journal + every capture dumped under `/var/lib/fprint/goodix5125-dump`. `collect` copies the dumps to `captures/fprintd`. **Turn it off afterwards** |
 | `journalctl -u fprintd` | warnings from the driver, e.g. `sensor not answering …, recovering it` |
 
