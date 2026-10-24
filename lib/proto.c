@@ -25,6 +25,7 @@ const char *gx_strerror(int err)
     case GX_ERR_CANCELLED:   return "cancelled";
     case GX_ERR_ARG:         return "invalid argument";
     case GX_ERR_UNSUPPORTED: return "unsupported sensor or firmware";
+    case GX_ERR_FINGER:      return "finger on the sensor";
     default:                 return "unknown error";
     }
 }

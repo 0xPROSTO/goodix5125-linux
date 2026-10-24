@@ -34,6 +34,7 @@ enum {
     GX_ERR_CANCELLED = -7,
     GX_ERR_ARG       = -8,
     GX_ERR_UNSUPPORTED = -9, /* firmware/chip we do not know */
+    GX_ERR_FINGER    = -10, /* a finger rests where none may be */
 };
 
 const char *gx_strerror(int err);

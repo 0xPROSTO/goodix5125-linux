@@ -272,12 +272,15 @@ post (Job *job, int stage, GError *retry, int finger)
 }
 
 /* Ends the verify/identify action with its result while the worker still
- * waits for the finger to lift. */
+ * waits for the finger to lift. From here on the action's cancellable no
+ * longer stops the worker: the client may cancel as soon as it has the
+ * result, before the lift wait starts. */
 static void
 post_result (Job *job)
 {
   Note *n = g_new0 (Note, 1);
 
+  g_atomic_int_set (&job->ignore_cancel, 1);
   n->dev = g_object_ref (FP_DEVICE (job->self));
   n->serial = job->serial;
   n->finger = -1;
@@ -352,7 +355,7 @@ session_open (Job *job, Session *s)
       g_usleep (300 * 1000);
     }
   if (!self->bg_valid)
-    return GX_ERR_DEVICE;
+    return GX_ERR_FINGER;
 
   memcpy (s->bg, self->bg, sizeof (s->bg));
   memcpy (s->info.fdt_level, self->fdt_level, sizeof (s->info.fdt_level));
@@ -502,10 +505,8 @@ run_enroll (Job *job, Session *s)
 static int
 wait_after_result (Job *job, Session *s)
 {
-  int rc;
+  int rc = wait_lift (job, s, AFTER_MATCH_LIFT_MS);
 
-  g_atomic_int_set (&job->ignore_cancel, 1);
-  rc = wait_lift (job, s, AFTER_MATCH_LIFT_MS);
   return rc == GX_ERR_TIMEOUT ? GX_OK : rc;
 }
 
@@ -535,7 +536,10 @@ run_match (Job *job, Session *s)
       int score;
 
       if (!templates)
-        continue;
+        {
+          g_warning ("goodix5125: print %u has unusable data, re-enroll it", i);
+          continue;
+        }
       score = gx_match_set ((const gx_template *) templates->data, templates->len, &probe);
       g_debug ("match: print %u scores %d (threshold %d)", i, score,
                GX_MATCH_THRESHOLD);
@@ -568,9 +572,13 @@ worker (GTask *task, gpointer source, gpointer task_data, GCancellable *cancella
   on_close = g_cancellable_connect (job->abort, G_CALLBACK (on_abort), job, NULL);
 
   g_mutex_lock (&job->self->worker_lock);
-  rc = session_open (job, s);
+  /* Cancelled while the previous worker finished: leave the sensor alone. */
+  if (g_cancellable_is_cancelled (job->io))
+    rc = GX_ERR_CANCELLED;
+  else
+    rc = session_open (job, s);
   /* A finger resting on the sensor at open time only delays the background. */
-  if (job->kind == JOB_OPEN && rc == GX_ERR_DEVICE)
+  if (job->kind == JOB_OPEN && rc == GX_ERR_FINGER)
     rc = GX_OK;
   if (rc == GX_OK && job->kind == JOB_ENROLL)
     rc = run_enroll (job, s);
@@ -715,13 +723,14 @@ dev_open (FpDevice *dev)
   FpiDeviceGoodix5125 *self = FPI_DEVICE_GOODIX5125 (dev);
   GError *error = NULL;
 
-  self->main_ctx = g_main_context_ref_thread_default ();
-
   if (!g_usb_device_claim_interface (fpi_device_get_usb_device (dev), USB_IFACE, 0, &error))
     {
+      /* As in complete_job: libfprint leaves the device open on failure. */
+      g_usb_device_close (fpi_device_get_usb_device (dev), NULL);
       fpi_device_open_complete (dev, error);
       return;
     }
+  self->main_ctx = g_main_context_ref_thread_default ();
   start_job (dev, JOB_OPEN, NULL);
 }
 
@@ -778,9 +787,18 @@ static void
 dev_verify (FpDevice *dev)
 {
   GPtrArray *gallery = g_ptr_array_new_with_free_func (g_object_unref);
+  g_autoptr(GArray) templates = NULL;
   FpPrint *print = NULL;
 
   fpi_device_get_verify_data (dev, &print);
+  /* Stored by an older driver (PRINT_VERSION) or corrupt: say so before the
+   * user touches the sensor, instead of failing every match. */
+  if (!(templates = print_templates (print)))
+    {
+      g_ptr_array_unref (gallery);
+      fpi_device_verify_complete (dev, fpi_device_error_new (FP_DEVICE_ERROR_DATA_INVALID));
+      return;
+    }
   g_ptr_array_add (gallery, g_object_ref (print));
   start_job (dev, JOB_VERIFY, gallery);
 }
