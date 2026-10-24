@@ -59,6 +59,7 @@
 
 #define DEG (M_PI / 180)
 #define DESC_MAX ((2 * RADIUS + 1) * (2 * RADIUS + 1))
+#define N_ROT (2 * ROT_MAX / ROT_STEP + 1)   /* probe angles tried */
 
 /* Disc sample offsets. */
 static int disc_n;
@@ -90,6 +91,14 @@ typedef struct {
     keypoint k[KP_MAX];
     float sm[N];             /* smoothed image the patches come from */
 } kpset;
+
+/* One comparison's working set, too big for the stack. The probe is
+ * described once at every angle and then compared with any number of views. */
+typedef struct {
+    kpset view;                    /* described at 0 */
+    kpset probe;                   /* keypoints and smoothed image */
+    keypoint rot[N_ROT][KP_MAX];   /* probe descriptors per angle tried */
+} match_ctx;
 
 static float sample(const float *img, float x, float y)
 {
@@ -262,17 +271,19 @@ typedef struct {
 
 #define PAIRS_MAX (KP_MAX * 16)
 
-/* Mutual, unambiguous descriptor matches of b (sampled at `angle`) in a. */
-static int candidates(const kpset *ka, const kpset *kb, double angle, pair *out)
+/* Mutual, unambiguous descriptor matches of the nb probe keypoints kb
+ * (sampled at `angle`) in a. */
+static int candidates(const kpset *ka, const keypoint *kb, int nb, double angle,
+                      pair *out)
 {
     static _Thread_local float sim[KP_MAX][KP_MAX];
     int nm = 0;
 
-    for (int j = 0; j < kb->n; j++)
+    for (int j = 0; j < nb; j++)
         for (int i = 0; i < ka->n; i++)
-            sim[j][i] = dot(kb->k[j].d, ka->k[i].d);
+            sim[j][i] = dot(kb[j].d, ka->k[i].d);
 
-    for (int j = 0; j < kb->n; j++) {
+    for (int j = 0; j < nb; j++) {
         int bi = -1;
         float best = -1, second = -1;
         for (int i = 0; i < ka->n; i++) {
@@ -287,7 +298,7 @@ static int candidates(const kpset *ka, const kpset *kb, double angle, pair *out)
         if (bi < 0 || best < DESC_MIN || best - second < DESC_GAP)
             continue;
         bool mutual = true;
-        for (int jj = 0; jj < kb->n; jj++)
+        for (int jj = 0; jj < nb; jj++)
             if (jj != j && sim[jj][bi] > best) {
                 mutual = false;
                 break;
@@ -295,8 +306,8 @@ static int candidates(const kpset *ka, const kpset *kb, double angle, pair *out)
         if (!mutual)
             continue;
         out[nm].pb = j;
-        out[nm].bx = kb->k[j].x;
-        out[nm].by = kb->k[j].y;
+        out[nm].bx = kb[j].x;
+        out[nm].by = kb[j].y;
         out[nm].ax = ka->k[bi].x;
         out[nm].ay = ka->k[bi].y;
         out[nm].phi = -angle;
@@ -352,10 +363,10 @@ static int consensus(const pair *m, int nm, xform *best_x)
     return best_inl;
 }
 
-/* Probe kb (keypoints detected, described in place) against target ka
- * (described at 0): tries every angle, keeps the best. The winning pairs are
- * copied to `pairs` when given. */
-static int match_sets(const kpset *ka, kpset *kb, gx_match_result *r, xform *x,
+/* Probe (described at every angle in c->rot) against the view (described
+ * at 0): tries every angle, keeps the best. The winning pairs are copied to
+ * `pairs` when given. */
+static int match_sets(const match_ctx *c, gx_match_result *r, xform *x,
                       pair *pairs, int *npairs)
 {
     static _Thread_local pair m[PAIRS_MAX];
@@ -364,12 +375,12 @@ static int match_sets(const kpset *ka, kpset *kb, gx_match_result *r, xform *x,
     r->candidates = 0;
     if (npairs)
         *npairs = 0;
-    for (int deg = -ROT_MAX; deg <= ROT_MAX; deg += ROT_STEP) {
+    for (int a = 0; a < N_ROT; a++) {
+        int deg = -ROT_MAX + a * ROT_STEP;
         xform t;
         int nm, inl;
 
-        describe(kb, deg * DEG);
-        nm = candidates(ka, kb, deg * DEG, m);
+        nm = candidates(&c->view, c->rot[a], c->probe.n, deg * DEG, m);
         inl = consensus(m, nm, &t);
         if (inl > r->inliers || (inl == r->inliers && nm > r->candidates)) {
             r->inliers = inl;
@@ -414,27 +425,48 @@ static double aligned_ncc(const float *a, const float *b, const xform *t, int *o
     return var > 1e-9 ? cov / sqrt(var) : 0;
 }
 
-void gx_match_detail(const gx_template *ta, const gx_template *tb,
-                     gx_match_result *r)
+static void prepare_probe(match_ctx *c, const gx_template *probe)
 {
-    static _Thread_local kpset ka, kb;
+    detect(probe->img, &c->probe);
+    for (int a = 0; a < N_ROT; a++) {
+        describe(&c->probe, (-ROT_MAX + a * ROT_STEP) * DEG);
+        memcpy(c->rot[a], c->probe.k, (size_t)c->probe.n * sizeof(keypoint));
+    }
+}
+
+/* The prepared probe against one enrolled view. */
+static void compare(match_ctx *c, const gx_template *view, gx_match_result *r)
+{
     xform t = xform_make(0, 0, 0);
 
     memset(r, 0, sizeof(*r));
-    detect(ta->img, &ka);
-    detect(tb->img, &kb);
-    describe(&ka, 0);
-    r->kp_a = ka.n;
-    r->kp_b = kb.n;
-    match_sets(&ka, &kb, r, &t, NULL, NULL);
+    detect(view->img, &c->view);
+    describe(&c->view, 0);
+    r->kp_a = c->view.n;
+    r->kp_b = c->probe.n;
+    match_sets(c, r, &t, NULL, NULL);
     r->score = 0;
     if (r->inliers < 3)
         return;
     /* A few chance inliers between different fingers are common; their
      * transform does not line the ridges up. */
-    r->ncc = aligned_ncc(ka.sm, kb.sm, &t, &r->overlap);
+    r->ncc = aligned_ncc(c->view.sm, c->probe.sm, &t, &r->overlap);
     if (r->ncc >= GX_NCC_MIN && r->overlap >= GX_OVERLAP_MIN)
         r->score = r->inliers;
+}
+
+/* Out of memory scores 0: never a match. */
+void gx_match_detail(const gx_template *ta, const gx_template *tb,
+                     gx_match_result *r)
+{
+    match_ctx *c = malloc(sizeof(*c));
+
+    memset(r, 0, sizeof(*r));
+    if (!c)
+        return;
+    prepare_probe(c, tb);
+    compare(c, ta, r);
+    free(c);
 }
 
 int gx_match(const gx_template *a, const gx_template *b)
@@ -447,13 +479,20 @@ int gx_match(const gx_template *a, const gx_template *b)
 
 int gx_match_set(const gx_template *tpls, int n, const gx_template *probe)
 {
+    match_ctx *c = malloc(sizeof(*c));
     int best = 0;
 
+    if (!c)
+        return 0;
+    prepare_probe(c, probe);
     for (int t = 0; t < n; t++) {
-        int score = gx_match(&tpls[t], probe);
-        if (score > best)
-            best = score;
+        gx_match_result r;
+
+        compare(c, &tpls[t], &r);
+        if (r.score > best)
+            best = r.score;
     }
+    free(c);
     return best;
 }
 
