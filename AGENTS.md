@@ -33,14 +33,14 @@ goodix-fp-dump / goodix-5117-driver (LGPL-2.1+).
 | `driver/apply.sh` | copies `lib/*` + driver into a libfprint tree and registers it in meson |
 | `packaging/PKGBUILD` | builds `libfprint-goodix5125` (upstream libfprint 1.94.100 + this driver; replaces the distro `libfprint`) |
 | `install.sh` | owner-run installer: build + `pacman -U` + fprintd + key to `/etc/goodix5125/psk.bin` (+ `--sudo` PAM) |
-| `tests/test.c` | 24 hardware-free checks (`make check`) |
+| `tests/test.c` | 28 hardware-free checks (`make check`) |
 | `tools/` | bring-up, evaluation and live-test tools (below) |
 | `vm/`, `tools/extract-psk.ps1`, `tools/probe.py` | one-time key provisioning via a throwaway Windows VM. Already done, the VM is destroyed |
 
 ## Build and test
 
 ```sh
-make && make check                  # lib + gxctl/matcheval/seteval + 24 tests, no hardware
+make && make check                  # lib + gxctl/matcheval/seteval + 28 tests, no hardware
 driver/apply.sh build/libfprint && ninja -C build/libfprint/_build   # compile the driver in-tree
 cd packaging && makepkg -f          # the package the owner installs
 tools/evalset.sh                    # matcher regression on stored captures (see below)
