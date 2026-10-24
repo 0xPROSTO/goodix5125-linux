@@ -154,7 +154,8 @@ int gx_tls_open(gx_dev *dev, const uint8_t psk[GX_PSK_LEN])
             if (dev->log)
                 dev->log(dev->log_ctx, "TLS up: %s",
                          SSL_get_cipher_name(dev->tls->ssl));
-            /* Not always acknowledged right after a fresh handshake. */
+            /* Not always acknowledged right after a fresh handshake; an ACK
+             * that comes late is skipped by the next gx_command(). */
             unsigned saved = dev->timeout_ms;
             dev->timeout_ms = 300;
             gx_command(dev, GX_CMD_TLS_ESTABLISHED, none, sizeof(none), NULL,

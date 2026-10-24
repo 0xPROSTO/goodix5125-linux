@@ -59,12 +59,19 @@ int gx_send_tls(gx_dev *dev, const uint8_t *records, size_t len)
     return send_pack(dev, GX_FLAGS_TLS, records, len);
 }
 
-static bool all_zero(const uint8_t *buf, size_t len)
+/* Drops the zero bytes in front of the next pack. The MCU pads every pack to
+ * whole 64-byte USB packets, also when another pack follows in the same
+ * transfer, and no pack starts with flags 0. */
+static void skip_padding(gx_dev *dev)
 {
-    for (size_t i = 0; i < len; i++)
-        if (buf[i])
-            return false;
-    return true;
+    size_t zeros = 0;
+
+    while (zeros < dev->rx_len && dev->rx[zeros] == 0)
+        zeros++;
+    if (zeros) {
+        memmove(dev->rx, dev->rx + zeros, dev->rx_len - zeros);
+        dev->rx_len -= zeros;
+    }
 }
 
 int gx_recv_pack(gx_dev *dev, uint8_t *flags, const uint8_t **payload,
@@ -79,8 +86,7 @@ int gx_recv_pack(gx_dev *dev, uint8_t *flags, const uint8_t **payload,
                                                NULL, NULL)) > 0) {
         memmove(dev->rx, dev->rx + total, dev->rx_len - (size_t)total);
         dev->rx_len -= (size_t)total;
-        if (all_zero(dev->rx, dev->rx_len))
-            dev->rx_len = 0;  /* padding of the last USB packet */
+        skip_padding(dev);
     }
 
     for (;;) {
@@ -119,12 +125,11 @@ int gx_recv_pack(gx_dev *dev, uint8_t *flags, const uint8_t **payload,
         if (rc < 0)
             return rc;
 
-        if (dev->rx_len == 0 && all_zero(chunk, got))
-            continue;
         if (dev->rx_len + got > sizeof(dev->rx))
             return GX_ERR_PROTOCOL;
         memcpy(dev->rx + dev->rx_len, chunk, got);
         dev->rx_len += got;
+        skip_padding(dev);
     }
 }
 
@@ -174,10 +179,23 @@ int gx_command(gx_dev *dev, uint8_t cmd, const uint8_t *payload, size_t len,
     if (rc < 0)
         return rc;
 
-    rc = recv_msg(dev, GX_CMD_ACK, &body, &body_len, dev->timeout_ms);
-    if (rc < 0)
-        return rc;
-    if (body_len < 2 || body[0] != cmd || !(body[1] & 0x01))
+    /* An ACK for another command is a late one for an earlier command
+     * (TLS_ESTABLISHED is not always acknowledged in time): not ours. */
+    for (int stray = 0;; stray++) {
+        rc = recv_msg(dev, GX_CMD_ACK, &body, &body_len, dev->timeout_ms);
+        if (rc < 0)
+            return rc;
+        if (body_len < 2)
+            return GX_ERR_PROTOCOL;
+        if (body[0] == cmd)
+            break;
+        if (stray == 3)
+            return GX_ERR_PROTOCOL;
+        if (dev->log)
+            dev->log(dev->log_ctx, "skipping ACK for %02x while waiting for %02x",
+                     body[0], cmd);
+    }
+    if (!(body[1] & 0x01))
         return GX_ERR_PROTOCOL;
 
     if (reply == NULL)

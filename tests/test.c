@@ -68,6 +68,73 @@ static void test_framing(void)
     CHECK(cmd == GX_CMD_FW_VERSION && !strcmp((const char *)payload, "GF_ST411SEC_APP_12509"));
 }
 
+/* Scripted transport: read() hands out the queued USB transfers in order. */
+typedef struct {
+    uint8_t chunk[8][256];
+    size_t len[8];
+    int n, next;
+} fake_usb;
+
+static int fake_write(void *ctx, const uint8_t *buf, size_t len, unsigned timeout)
+{
+    return GX_OK;
+}
+
+static int fake_read(void *ctx, uint8_t *buf, size_t cap, size_t *got, unsigned timeout)
+{
+    fake_usb *f = ctx;
+
+    *got = 0;
+    if (f->next == f->n)
+        return GX_ERR_TIMEOUT;
+    memcpy(buf, f->chunk[f->next], f->len[f->next]);
+    *got = f->len[f->next++];
+    return GX_OK;
+}
+
+/* Appends one message pack to transfer i, zero-padded to 64 bytes if asked. */
+static void fake_msg(fake_usb *f, int i, uint8_t cmd, const uint8_t *p, size_t len,
+                     bool pad)
+{
+    uint8_t msg[128];
+    size_t m = gx_msg_encode(cmd, p, len, true, msg, sizeof(msg));
+
+    f->len[i] += gx_pack_encode(GX_FLAGS_MSG, msg, m, f->chunk[i] + f->len[i],
+                                sizeof(f->chunk[i]) - f->len[i]);
+    if (pad)
+        f->len[i] = (f->len[i] + 63) / 64 * 64;
+    if (i >= f->n)
+        f->n = i + 1;
+}
+
+static void test_command(void)
+{
+    static fake_usb f;
+    static gx_dev dev;
+    gx_transport t = { fake_write, fake_read, &f, true };
+    uint8_t reply[16];
+    size_t n = 0;
+
+    /* A late ACK for an earlier command (TLS_ESTABLISHED) is not ours. */
+    memset(&f, 0, sizeof(f));
+    gx_dev_init(&dev, &t);
+    fake_msg(&f, 0, GX_CMD_ACK, (const uint8_t[]){ GX_CMD_TLS_ESTABLISHED, 0x01 }, 2, true);
+    fake_msg(&f, 1, GX_CMD_ACK, (const uint8_t[]){ GX_CMD_QUERY_MCU_STATE, 0x01 }, 2, true);
+    fake_msg(&f, 2, GX_CMD_QUERY_MCU_STATE, (const uint8_t[]){ 0x5a }, 1, true);
+    CHECK(gx_command(&dev, GX_CMD_QUERY_MCU_STATE, (const uint8_t[]){ 0x55 }, 1,
+                     reply, sizeof(reply), &n) == GX_OK);
+    CHECK(n == 1 && reply[0] == 0x5a);
+
+    /* One transfer: a padded pack, then the next one. */
+    memset(&f, 0, sizeof(f));
+    gx_dev_init(&dev, &t);
+    fake_msg(&f, 0, GX_CMD_ACK, (const uint8_t[]){ GX_CMD_READ_REG, 0x01 }, 2, true);
+    fake_msg(&f, 0, GX_CMD_READ_REG, (const uint8_t[]){ 0xa2, 0x04, 0x25, 0x00 }, 4, false);
+    CHECK(gx_command(&dev, GX_CMD_READ_REG, (const uint8_t[]){ 0, 0, 0, 4 }, 4,
+                     reply, sizeof(reply), &n) == GX_OK);
+    CHECK(n == 4 && memcmp(reply, "\xa2\x04\x25\x00", 4) == 0);
+}
+
 static void test_otp(void)
 {
     uint8_t otp[64];
@@ -190,6 +257,7 @@ static void test_match(void)
 int main(void)
 {
     test_framing();
+    test_command();
     test_otp();
     test_decode();
     test_psk_file();
