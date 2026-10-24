@@ -1,0 +1,4 @@
+# Goodix 27c6:5125 fingerprint sensor (Huawei MateBook D, NbD-WDH9)
+# Gives the user logged in at the local seat access to the device
+# for driver development, without needing root.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="27c6", ATTRS{idProduct}=="5125", MODE="0660", TAG+="uaccess"

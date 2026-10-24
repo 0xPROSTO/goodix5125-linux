@@ -1,0 +1,13 @@
+.venv/
+.vm/
+.vm-qemu.log
+psk.bin
+captures/
+probe-result.json
+build/
+packaging/src/
+packaging/pkg/
+packaging/libfprint/
+packaging/*.pkg.tar.zst
+captures-*.log
+__pycache__/

@@ -1,0 +1,35 @@
+# libfprint with the goodix5125 driver (Goodix 27c6:5125, Huawei MateBook D NbD-WDH9).
+# Built from the same upstream release as the distribution package and a
+# drop-in replacement for it: fprintd and everything else keep working.
+
+pkgname=libfprint-goodix5125
+_pkgname=libfprint
+pkgver=1.94.100
+pkgrel=8
+pkgdesc="Library for fingerprint readers, with the goodix5125 driver (Goodix 27c6:5125)"
+arch=(x86_64)
+url="https://fprint.freedesktop.org/"
+license=(LGPL-2.1-or-later)
+depends=(glib2 glibc libgcc libgudev libgusb openssl pixman)
+makedepends=(git meson)
+provides=("libfprint=$pkgver" "libfprint-2.so=2-64")
+conflicts=(libfprint)
+source=("git+https://gitlab.freedesktop.org/libfprint/libfprint.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  "$startdir/../driver/apply.sh" "$srcdir/$_pkgname"
+}
+
+build() {
+  arch-meson $_pkgname build \
+    -D doc=false \
+    -D gtk-examples=false \
+    -D installed-tests=false \
+    -D introspection=false
+  meson compile -C build
+}
+
+package() {
+  meson install -C build --destdir "$pkgdir"
+}
